@@ -1,0 +1,41 @@
+# The sample services, on the network of a running engine stack (deploy/ in EDA-choreography).
+name: sample-services
+
+x-common: &common
+  restart: unless-stopped
+  networks: [choreography]
+
+services:
+  warehouse:
+    <<: *common
+    image: ghcr.io/ermi9/sample-warehouse:${TAG:-latest}
+    environment:
+      DISCOVERY_URL: http://discovery:8080
+      PUBLIC_URL: http://warehouse:9000
+      FAULTS: ${FAULTS:-off}
+    volumes: [warehouse-data:/data]
+
+  shop:
+    <<: *common
+    image: ghcr.io/ermi9/sample-shop:${TAG:-latest}
+    environment:
+      DISCOVERY_URL: http://discovery:8080
+      PUBLIC_URL: http://shop:9100
+      FAULTS: ${FAULTS:-off}
+    volumes: [shop-data:/data]
+
+  # docker compose run --rm showcase [case ...]
+  showcase:
+    <<: *common
+    restart: "no"
+    profiles: [showcase]
+    image: ghcr.io/ermi9/sample-showcase:${TAG:-latest}
+
+networks:
+  choreography:
+    name: ${ENGINE_NETWORK:-choreography_default}
+    external: true
+
+volumes:
+  warehouse-data:
+  shop-data:
