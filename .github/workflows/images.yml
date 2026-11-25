@@ -1,0 +1,53 @@
+name: Images
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: ermi9/EDA-choreography
+          path: engine
+      - name: Both processes keep the participant contract
+        run: |
+          docker build -t warehouse warehouse
+          docker build -t shop shop
+          docker run -d -p 9000:9000 warehouse
+          docker run -d -p 9100:9100 shop
+          for service in 9000/inventory 9000/shipping 9100/payment 9100/orders; do
+            curl -s --retry 20 --retry-delay 1 --retry-all-errors -o /dev/null "http://localhost:$service/health"
+            python3 engine/contract/check.py "http://localhost:$service" --input '{"sku": "pen", "quantity": 2}'
+          done
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - { image: sample-warehouse, context: warehouse, file: warehouse/Dockerfile }
+          - { image: sample-shop, context: shop, file: shop/Dockerfile }
+          - { image: sample-showcase, context: ., file: showcase/Dockerfile }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          push: true
+          tags: |
+            ghcr.io/ermi9/${{ matrix.image }}:${{ github.sha }}
+            ghcr.io/ermi9/${{ matrix.image }}:latest
