@@ -55,5 +55,14 @@ off elsewhere.
 | `service_down_then_back`, `service_stays_down` | a service that is down when the flow reaches it |
 | `many_at_once` | 60 checkouts at once with random faults |
 
+Two larger flows put the cases together:
+
+| Flow | Cases | What is in it |
+|---|---|---|
+| `order-with-giftwrap-installments-and-parallel-delivery` | `all_*` | a choice, a late-bound service, a loop with a limit, a fork with a choice in a branch, a join with a timeout, services that run several steps, a step after the join |
+| `charge-and-reward-then-ship-then-aftercare-two-forks` | `forks_*` | two forks in a row, the first with both branches at one service |
+
+A step is called after its service where the flow has one task on it, and after the task's id otherwise.
+
 By hand, in the editor: run `checkout` with `{"sku": "pen", "quantity": 2, "city": "Atlantis"}` to
 see a branch fail, since no courier serves Atlantis.

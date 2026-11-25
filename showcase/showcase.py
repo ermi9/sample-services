@@ -376,10 +376,156 @@ def many_at_once():
     until("the data matching the outcomes", matches, 60)
 
 
+ALL_IN_ONE = "order-with-giftwrap-installments-and-parallel-delivery"
+TWO_FORKS = "charge-and-reward-then-ship-then-aftercare-two-forks"
+
+
+def steps(run, what):
+    return [event["step"] for event in did(run, what)]
+
+
+def put_back_after(run, before):
+    """Compensated, every step done was undone once, reserve last, and the data is what it was."""
+    ends(run, "COMPENSATED")
+    same(before)
+    done, undone = steps(run, "done"), steps(run, "undone")
+    assert sorted(done) == sorted(undone), f"done {done}, undone {undone}"
+    assert not done or undone[-1] == "Task_reserve" or "Task_reserve" not in done, undone
+    return undone
+
+
+def all_happy():
+    """[all in one] Two installments, Graz: the loop runs twice and the branch's choice books a second courier."""
+    run = start(ALL_IN_ONE, city="Graz", installments=2)
+    ends(run, "COMPLETED")
+    done = steps(run, "done")
+    assert done.count("Task_charge") == 2 and "Task_second_leg" in done and "giftwrap" not in done, done
+    assert done[-2:] == ["orders", "Task_loyalty_bonus"], done
+
+
+def all_branch_refused():
+    """[all in one] Atlantis: everything before the fork is undone, both installments included."""
+    before = state()
+    run = start(ALL_IN_ONE, city="Atlantis", installments=2)
+    undone = put_back_after(run, before)
+    assert undone.count("Task_charge") == 2, undone
+    assert undone.index("Task_loyalty") < undone.index("Task_charge"), undone
+
+
+def all_sibling_skipped():
+    """[all in one] The courier is refused while the spare is being reserved: its points step is skipped."""
+    before = state()
+    run = start(ALL_IN_ONE, city="Atlantis", faults=fault("Task_spare", "slow", ms=3000))
+    put_back_after(run, before)
+    assert outcomes(run)["Task_loyalty_spare"] == "SKIPPED", outcomes(run)
+
+
+def all_loop_fails():
+    """[all in one] The second of three installments fails: the first is undone, then the stock."""
+    before = state()
+    run = start(ALL_IN_ONE, installments=3, faults=fault("Task_charge", "error", visit=2))
+    assert put_back_after(run, before) == ["Task_charge", "Task_reserve"]
+
+
+def all_loop_limit():
+    """[all in one] Seven installments where five are allowed: all five are undone."""
+    before = state()
+    run = start(ALL_IN_ONE, quantity=7, installments=7)
+    assert put_back_after(run, before) == ["Task_charge"] * 5 + ["Task_reserve"]
+
+
+def all_gift_never_comes():
+    """[all in one] A large order needs the giftwrap service, which nobody registered: the stock goes back."""
+    before = state()
+    run = start(ALL_IN_ONE, sku="lamp", quantity=10)
+    assert put_back_after(run, before) == ["Task_reserve"]
+
+
+def all_gift_comes():
+    """[all in one] giftwrap is plugged in while the run waits for it, and a later failure unwraps the gift."""
+    before = state()
+    run = start(ALL_IN_ONE, sku="lamp", quantity=10, installments=2, faults=fault("Task_loyalty_bonus", "error"))
+    time.sleep(4)
+    here = os.environ.get("GIFTWRAP_URL", WAREHOUSE) + "/giftwrap"
+    call("POST", f"{DISCOVERY}/register", {"name": "giftwrap", "url": here, "openapiUrl": here + "/openapi.json"})
+    try:
+        undone = put_back_after(run, before)
+        assert undone[-2:] == ["giftwrap", "Task_reserve"], undone
+    finally:
+        call("DELETE", f"{DISCOVERY}/services/giftwrap")
+
+
+def all_join_times_out():
+    """[all in one] The courier is booked after the join gave up: the late branch undoes its own booking."""
+    before = state()
+    run = start(ALL_IN_ONE, faults=fault("Task_book", "slow", ms=9000))
+    ends(run, "COMPENSATED")
+    until("the late booking being undone", lambda: "Task_book" in steps(run, "undone"), 40)
+    same(before)
+    done, undone = steps(run, "done"), steps(run, "undone")
+    assert sorted(done) == sorted(undone), f"done {done}, undone {undone}"
+
+
+def all_after_the_join():
+    """[all in one] The last step fails: the order, then both branches, then everything before the fork."""
+    before = state()
+    run = start(ALL_IN_ONE, city="Graz", faults=fault("Task_loyalty_bonus", "error"))
+    undone = put_back_after(run, before)
+    assert undone[0] == "orders" and undone[-3:] == ["Task_loyalty", "Task_charge", "Task_reserve"], undone
+    assert undone.index("Task_second_leg") < undone.index("Task_book"), undone
+
+
+def all_reply_lost():
+    """[all in one] The charge is made but never confirmed: uncertain, and undone."""
+    before = state()
+    run = start(ALL_IN_ONE, faults=fault("Task_charge", "lost-reply"))
+    assert put_back_after(run, before) == ["Task_charge", "Task_reserve"]
+    assert outcomes(run)["Task_charge"] == "UNCERTAIN", outcomes(run)
+
+
+def all_undo_parked():
+    """[all in one] Undoing the courier never works: earlier steps wait until a person has it tried again."""
+    before = state()
+    run = start(ALL_IN_ONE, faults=fault("Task_loyalty_bonus", "error") + fault("Task_book", "undo-down"))
+    ends(run, "PARKED", 400)
+    assert not {"Task_loyalty", "Task_charge", "Task_reserve"} & set(steps(run, "undone")), steps(run, "undone")
+    call("POST", f"{WAREHOUSE}/shipping/heal")
+    call("POST", f"{ENGINE}/api/runs/{run}/undo", {})
+    put_back_after(run, before)
+
+
+def forks_happy():
+    """[two forks] Both joins fire once, and every step runs once."""
+    run = start(TWO_FORKS)
+    ends(run, "COMPLETED")
+    done = steps(run, "done")
+    assert len(done) == len(set(done)) == 7, done
+
+
+def forks_first_refused():
+    """[two forks] eve cannot pay: the sibling's points are undone, and the second fork is never reached."""
+    before = state()
+    run = start(TWO_FORKS, customer="eve")
+    put_back_after(run, before)
+    assert "shipping" not in steps(run, "done")
+
+
+def forks_last_fails():
+    """[two forks] The last step fails: second fork, courier, first fork, stock, in that order."""
+    before = state()
+    run = start(TWO_FORKS, faults=fault("orders", "error"))
+    undone = put_back_after(run, before)
+    assert (set(undone[:2]), undone[2], set(undone[3:5]), undone[5]) == (
+        {"Task_loyalty_bonus", "Task_spare"}, "shipping", {"Task_charge", "Task_loyalty"}, "Task_reserve"), undone
+
+
 CASES = [happy, first_step_refused, later_step_refused, last_step_fails, branch_fails, sibling_skipped, after_the_join,
          passing_error, reply_lost_once, reply_always_lost, work_after_undo, undo_fails_then_works, undo_parked,
          join_times_out, loop_completes, loop_fails_midway, loop_limit, delivered_twice, late_service_never_comes,
-         late_service_comes, service_down_then_back, service_stays_down, many_at_once]
+         late_service_comes, service_down_then_back, service_stays_down, many_at_once,
+         all_happy, all_branch_refused, all_sibling_skipped, all_loop_fails, all_loop_limit, all_gift_never_comes,
+         all_gift_comes, all_join_times_out, all_after_the_join, all_reply_lost, all_undo_parked,
+         forks_happy, forks_first_refused, forks_last_fails]
 
 
 def main():
